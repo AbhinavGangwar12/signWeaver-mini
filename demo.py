@@ -44,6 +44,17 @@ MIN_TRACKING_CONFIDENCE  = 0.75
 # Maximum words to show in the spoken history overlay
 HISTORY_MAX_LENGTH = 6
 
+# Camera fallbacks to improve reliability across Windows camera drivers
+CAMERA_CANDIDATES = [
+    (0, cv2.CAP_MSMF),
+    (0, cv2.CAP_DSHOW),
+    (0, cv2.CAP_ANY),
+    (1, cv2.CAP_ANY),
+]
+
+# Treat almost-flat frames as invalid (often seen as gray feed)
+MIN_FRAME_STDDEV = 2.0
+
 # =============================================================================
 # ── TEXT-TO-SPEECH HELPER ─────────────────────────────────────────────────────
 # =============================================================================
@@ -209,6 +220,51 @@ def draw_hud(
 
 
 # =============================================================================
+# ── CAMERA INITIALISATION HELPERS ────────────────────────────────────────────
+# =============================================================================
+
+def _is_valid_frame(frame) -> bool:
+    """
+    Returns True when `frame` looks like real image data, not an empty/flat
+    gray buffer. This catches cases where the camera opens but outputs junk.
+    """
+    if frame is None or frame.size == 0:
+        return False
+    return float(np.std(frame)) >= MIN_FRAME_STDDEV
+
+
+def open_camera_with_fallback():
+    """
+    Tries multiple (index, backend) pairs and returns the first camera that
+    yields valid frames after a short warm-up.
+    """
+    for cam_index, backend in CAMERA_CANDIDATES:
+        cap = cv2.VideoCapture(cam_index, backend)
+        if not cap.isOpened():
+            continue
+
+        # Start with safe defaults; avoid forcing unsupported high resolutions.
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+
+        valid = False
+        for _ in range(20):
+            ret, frame = cap.read()
+            if ret and _is_valid_frame(frame):
+                valid = True
+                break
+
+        if valid:
+            print(f"[INFO] Webcam opened (index={cam_index}, backend={backend}).")
+            return cap
+
+        cap.release()
+
+    return None
+
+
+# =============================================================================
 # ── MAIN INFERENCE LOOP ───────────────────────────────────────────────────────
 # =============================================================================
 
@@ -232,14 +288,11 @@ def main():
     )
 
     # ── Webcam ───────────────────────────────────────────────────────────────
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("[ERROR] Cannot open webcam at index 0.")
+    cap = open_camera_with_fallback()
+    if cap is None:
+        print("[ERROR] Could not get valid frames from webcam.")
+        print("[HINT] Close other camera apps and check Windows Camera privacy settings.")
         return
-
-    # Optional: hint at a resolution for consistent landmark normalisation
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
 
     print("\n[INFO] Live demo running. Press 'q' to quit, 'c' to clear history.\n")
 
@@ -255,7 +308,11 @@ def main():
 
     while True:
         ret, frame = cap.read()
-        if not ret:
+        if not ret or not _is_valid_frame(frame):
+            print("[WARN] Invalid camera frame received; retrying...")
+            continue
+
+        if frame is None:
             print("[ERROR] Failed to read frame.")
             break
 

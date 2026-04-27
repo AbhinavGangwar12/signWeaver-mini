@@ -107,7 +107,7 @@ def main():
     )
 
     # ── OpenCV webcam ────────────────────────────────────────────────────────
-    cap = cv2.VideoCapture(0)
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
         print("[ERROR] Cannot open webcam at index 0. Check your camera.")
         return
